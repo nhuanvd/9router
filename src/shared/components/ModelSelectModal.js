@@ -20,6 +20,7 @@ const ADDED_CHIP_CLASS = "bg-primary border-primary text-white hover:bg-primary-
 const AVAILABLE_CHIP_CLASS = "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5";
 const SELECT_ALL_CLASS = "px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
 const DESELECT_ALL_CLASS = "px-2 py-0.5 rounded text-[11px] font-medium bg-border/40 text-text-muted hover:text-text-main hover:bg-border/60 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const REGEX_BADGE_CLASS = "text-[10px] px-1 py-0.2 rounded bg-primary/10 text-primary font-mono font-medium";
 const NO_PATTERNS = [];
 
 const isSelectableModel = (model) => !model.isPlaceholder && !model.patternOnly;
@@ -608,7 +609,7 @@ export default function ModelSelectModal({
     () => Object.values(filteredGroups).flatMap((group) => group.models.filter(isSelectableModel)),
     [filteredGroups]
   );
-  const showAddPattern = previewPattern && Object.entries(filteredGroups).some(([providerId, group]) =>
+  const hasPatternMatches = previewPattern && Object.entries(filteredGroups).some(([providerId, group]) =>
     group.models.some((model) => matchesModelPattern(previewPattern, providerId, model)));
 
   const togglePattern = (source) => {
@@ -734,15 +735,26 @@ export default function ModelSelectModal({
               }
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-20 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+              className="w-full pl-8 pr-24 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
             />
             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-              {parsedQuery.isRegex && (
-                <span className="text-[10px] px-1 py-0.2 rounded bg-primary/10 text-primary font-mono font-medium">
-                  regex
-                </span>
+              {onAddModelPattern && (parsedQuery.isRegex || previewPattern) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (previewPattern && !selectionSaving && !modelPatterns.includes(patternSource)) {
+                      onAddModelPattern(patternSource);
+                    }
+                  }}
+                  className={`${REGEX_BADGE_CLASS} cursor-pointer hover:bg-primary/20`}
+                >
+                  Add regex
+                </button>
               )}
-              {parsedQuery.negativeTerms.length > 0 && !parsedQuery.isRegex && (
+              {!onAddModelPattern && parsedQuery.isRegex && (
+                <span className={REGEX_BADGE_CLASS}>regex</span>
+              )}
+              {parsedQuery.negativeTerms.length > 0 && !parsedQuery.isRegex && !previewPattern && (
                 <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-500 font-mono font-medium">
                   !exclude
                 </span>
@@ -759,18 +771,15 @@ export default function ModelSelectModal({
               )}
             </div>
           </div>
-          {showAddPattern && (
-            <button
-              type="button"
-              disabled={selectionSaving || modelPatterns.includes(patternSource)}
-              onClick={() => onAddModelPattern(patternSource)}
-              className="shrink-0 rounded bg-primary/10 px-2 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
-            >
-              Add regex
-            </button>
-          )}
         </div>
-        {patternSource !== undefined && !previewPattern && <p className="text-xs text-text-muted">To save a rule, use a valid RE2 pattern.</p>}
+        {onAddModelPattern && (parsedQuery.isRegex || patternSource !== undefined) && !previewPattern && (
+          <p className="text-xs text-text-muted">To save a rule, enter a valid RE2 pattern as <code>/pattern/</code>.</p>
+        )}
+        {previewPattern && !hasPatternMatches && (
+          <p className="text-xs text-text-muted">
+            This rule matches no models in the picker. Rules use the full resolved <code>providerId/model</code> ID.
+          </p>
+        )}
         {selectionError && <p role="alert" className="text-xs text-red-500">{selectionError}</p>}
 
         {!closeOnSelect && visibleModels.length > 0 && (
