@@ -422,6 +422,17 @@ flowchart LR
 - `src/app/api/provider-nodes*`: custom compatible node management
 - `src/app/api/oauth/*`: OAuth/device-code flows
 - `src/app/api/keys*`: local API key lifecycle
+  - In the Endpoint dashboard, enable **Restrict access** and open **Add combo or model** to add a model regex.
+    Enter a delimited RE2 pattern such as `/gemini/text-embedding-.*/` in the search field.
+    **Add regex** appears when a connected or keyless provider has a matching model, including supported non-chat models.
+    The saved pattern matches the full resolved `providerId/model` case-insensitively, including when clients use aliases.
+    Click **Add regex** to apply the rule immediately. Click a saved rule in the **Regex** section to remove it.
+    Removed rules stay visible until you close the picker. Click one again to restore it immediately.
+    The API key list shows the saved rules. The same search field finds exact entries by name or regex.
+    Use **Select All** beside the Combos or provider heading to add its visible entries.
+    When all visible entries are selected, **Deselect All** removes them.
+    Add combos and web search or fetch providers as individual entries.
+  - `PUT /api/keys/[id]` accepts optional `access.modelPatterns` alongside the exact entries in `access.allow`.
 - `src/app/api/models/alias`: alias management
 - `src/app/api/combos*`: fallback combo management
 - `src/app/api/pricing`: pricing overrides for cost calculation
