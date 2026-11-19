@@ -13,7 +13,7 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS,
 import { parseSearchQuery, matchesSearch } from "@/shared/utils/modelSearchFilter";
 import { getDeactivatedProviderIds } from "@/shared/utils/connectionStatus";
 import { NO_AUTH_PROVIDER_IDS } from "@/shared/utils/selectableModels";
-import { compileModelPattern } from "@/shared/utils/keyAccess";
+import { compileModelPattern, matchesModelPattern } from "@/shared/utils/keyAccess";
 
 const CHIP_CLASS = "px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1";
 const ADDED_CHIP_CLASS = "bg-primary border-primary text-white hover:bg-primary-hover";
@@ -37,9 +37,9 @@ function RegexIcon({ className }) {
 
 RegexIcon.propTypes = { className: PropTypes.string };
 
-function matchesModelPattern(regex, providerId, model) {
-  return Boolean(regex && !model.isPlaceholder && model.value.includes("/")
-    && regex.matches(`${providerId}/${model.id}`));
+function matchesPickerModelPattern(regex, providerId, model) {
+  return !model.isPlaceholder && model.value.includes("/")
+    && matchesModelPattern(regex, providerId, model.id);
 }
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
@@ -579,7 +579,7 @@ export default function ModelSelectModal({
         );
 
         models = models.filter((m) => {
-          if (matchesModelPattern(previewPattern, providerId, m)) return true;
+          if (matchesPickerModelPattern(previewPattern, providerId, m)) return true;
           if (m.patternOnly) return false;
           if (matchesSearch(m, parsedQuery)) return true;
           // If provider or alias matches, but model doesn't violate negative exclusion terms
@@ -610,7 +610,7 @@ export default function ModelSelectModal({
     [filteredGroups]
   );
   const hasPatternMatches = previewPattern && Object.entries(filteredGroups).some(([providerId, group]) =>
-    group.models.some((model) => matchesModelPattern(previewPattern, providerId, model)));
+    group.models.some((model) => matchesPickerModelPattern(previewPattern, providerId, model)));
 
   const togglePattern = (source) => {
     if (modelPatterns.includes(source)) {
@@ -712,7 +712,7 @@ export default function ModelSelectModal({
           </p>
           {onAddModelPattern && (
             <p className="mt-1">
-              Search with <code>/pattern/</code> to match full provider/model IDs. Click <strong>Add regex</strong> to apply the rule. Click a rule to remove or restore it while the picker is open.
+              Search with <code>/pattern/</code> to match full model IDs by provider ID or display alias. Click <strong>Add regex</strong> to apply the rule. Click a rule to remove or restore it while the picker is open.
             </p>
           )}
         </div>
@@ -777,7 +777,7 @@ export default function ModelSelectModal({
         )}
         {previewPattern && !hasPatternMatches && (
           <p className="text-xs text-text-muted">
-            This rule matches no models in the picker. Rules use the full resolved <code>providerId/model</code> ID.
+            This rule matches no models in the picker. Try the full model ID with its provider ID or display alias.
           </p>
         )}
         {selectionError && <p role="alert" className="text-xs text-red-500">{selectionError}</p>}
@@ -946,7 +946,7 @@ export default function ModelSelectModal({
                 }
                 const isSelected = selectedModel === model.value;
                 const isPlaceholder = model.isPlaceholder;
-                const isRegexMatch = activePatterns.some((regex) => matchesModelPattern(regex, providerId, model));
+                const isRegexMatch = activePatterns.some((regex) => matchesPickerModelPattern(regex, providerId, model));
                 return (
                   <button
                     key={model.value}
