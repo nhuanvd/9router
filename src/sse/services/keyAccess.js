@@ -8,7 +8,8 @@
 //     itself uses) is allowed iff that combo's name is listed;
 //   * a request that routes to a model is allowed iff its resolved
 //     `providerId/model` equals the resolved `providerId/model` of a listed
-//     model entry or fully matches a model regex. So `cx/gpt-5`, `codex/gpt-5` and an alias that points there
+//     model entry or fully matches a model regex by provider ID or display alias.
+//     So `cx/gpt-5`, `codex/gpt-5` and an alias that points there
 //     are one target; a raw string that merely looks like a listed entry but
 //     routes elsewhere (e.g. `MAIN` when the combo is `Main`, which routes to
 //     `openai/MAIN`) is not;
@@ -24,7 +25,7 @@ import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 import { getCombos } from "@/lib/db/repos/combosRepo.js";
 import { getModelInfo, getComboModels } from "./model.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
-import { compileModelPattern } from "@/shared/utils/keyAccess.js";
+import { compileModelPattern, matchesModelPattern } from "@/shared/utils/keyAccess.js";
 import {
   KEY_ACCESS_COMBO_OWNER,
   KEY_ACCESS_PROVIDER_AS_MODEL_KINDS,
@@ -105,7 +106,7 @@ async function getAllowSets(ctx) {
 
 function matchesModel(sets, provider, model) {
   return sets.models.has(canonicalModel(provider, model))
-    || sets.modelPatterns.some((pattern) => pattern.matches(`${provider}/${model}`));
+    || sets.modelPatterns.some((pattern) => matchesModelPattern(pattern, provider, model));
 }
 
 async function isModelStringAllowed(ctx, requested) {

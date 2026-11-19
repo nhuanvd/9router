@@ -425,7 +425,9 @@ flowchart LR
   - In the Endpoint dashboard, enable **Restrict access** and open **Add combo or model** to add a model regex.
     Enter a delimited RE2 pattern such as `/gemini/text-embedding-.*/` in the search field.
     Click **Add regex** inside the search field once the pattern is valid. The picker shows when no available model matches the rule.
-    The saved pattern matches the full resolved `providerId/model` case-insensitively, including when clients use aliases. For example, use `/opencode-go/.*/` for the OpenCode Go provider.
+    A saved pattern matches the full model ID case-insensitively using the resolved provider ID or its registered display
+    alias. For OpenCode Go, `/opencode-go/.*/` and `/ocg/.*/` grant the same models. The picker, model list and request
+    authorization use the same matching logic.
     The rule applies immediately. Click a saved rule in the **Regex** section to remove it.
     Removed rules stay visible until you close the picker. Click one again to restore it immediately.
     The API key list shows the saved rules. The same search field finds exact entries by name or regex.

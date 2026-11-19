@@ -9,7 +9,12 @@ const fx = vi.hoisted(() => ({
     { id: "c2", name: "other", models: ["openai/model-c"] },
   ],
   nodes: [{ id: "openai-compatible-chat-n1", type: "openai-compatible", prefix: "mock" }],
-  aliases: { fast: "openai/model-a", bee: "openai/model-b" },
+  aliases: {
+    fast: "openai/model-a",
+    bee: "openai/model-b",
+    "go-sample": "opencode-go/omen-alpha",
+    "ocg-redirect": "openai/model-a",
+  },
   keys: {},
 }));
 
@@ -98,6 +103,34 @@ describe("restricted: allow by combo", () => {
 });
 
 describe("restricted: allow by model regex", () => {
+  it.each(["ocg/.*", "opencode-go/.*"])("matches %s against the same provider across all entry points", async (pattern) => {
+    key("go-pattern", { restricted: true, allow: [], modelPatterns: [pattern] });
+    for (const model of ["ocg/omen-alpha", "opencode-go/omen-alpha", "go-sample"]) {
+      expect(await status("sk-go-pattern", model)).toBe(200);
+    }
+    expect(await status("sk-go-pattern", "openai/omen-alpha")).toBe(403);
+
+    const ctx = await ctxFor("sk-go-pattern");
+    expect(await engine.enforceKeyAccessResolved(ctx, "ocg/omen-alpha", "opencode-go", "omen-alpha")).toBeNull();
+    const aliasEntry = { id: "ocg/omen-alpha", owned_by: "ocg" };
+    const canonicalEntry = { id: "opencode-go/omen-alpha", owned_by: "opencode-go" };
+    const otherProvider = { id: "openai/omen-alpha", owned_by: "openai" };
+    expect(await engine.filterModelsListForKey(ctx, [aliasEntry, canonicalEntry, otherProvider]))
+      .toEqual([aliasEntry, canonicalEntry]);
+  });
+
+  it("matches the saved ocg prefix pattern using the resolved target's display alias", async () => {
+    key("go-prefix", { restricted: true, allow: [], modelPatterns: ["ocg.*"] });
+    expect(await status("sk-go-prefix", "go-sample")).toBe(200);
+    expect(await status("sk-go-prefix", "ocg-redirect")).toBe(403);
+  });
+
+  it("skips display aliases that route to another provider", () => {
+    const pattern = helpers.compileModelPattern("mmf/.*");
+    expect(helpers.matchesModelPattern(pattern, "mmf", "mimo-auto")).toBe(true);
+    expect(helpers.matchesModelPattern(pattern, "mimo-free", "mimo-auto")).toBe(false);
+  });
+
   it("fully matches resolved model IDs and accepts exact entries alongside patterns", async () => {
     for (const model of ["fast", "OpenAI/Model-A", "cx/gpt-5-mini", "mock/glm-4"]) {
       expect(await status("sk-regex", model)).toBe(200);

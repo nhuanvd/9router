@@ -1,6 +1,8 @@
 // Per-API-key access control: pure helpers (no DB, no
 // request objects), shared by the DB repo, the API routes and the engine.
 import { RE2JS } from "re2js";
+import { resolveProviderAlias } from "open-sse/services/model.js";
+import { getProviderAlias } from "@/shared/constants/providers.js";
 import {
   KEY_ACCESS_MAX_ENTRIES,
   KEY_ACCESS_MAX_ENTRY_LENGTH,
@@ -34,6 +36,17 @@ export function compileModelPattern(pattern) {
   } catch {
     return null;
   }
+}
+
+/** Match a full model ID using the resolved provider or its routing display alias. */
+export function matchesModelPattern(pattern, providerId, modelId) {
+  if (!pattern || !providerId || !modelId) return false;
+  if (pattern.matches(`${providerId}/${modelId}`)) return true;
+
+  const displayAlias = getProviderAlias(providerId);
+  // A registry alias can collide with another provider's ID or routing alias.
+  return displayAlias !== providerId && resolveProviderAlias(displayAlias) === providerId
+    && pattern.matches(`${displayAlias}/${modelId}`);
 }
 
 /**
