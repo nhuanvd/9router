@@ -13,6 +13,34 @@ import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS,
 import { parseSearchQuery, matchesSearch } from "@/shared/utils/modelSearchFilter";
 import { getDeactivatedProviderIds } from "@/shared/utils/connectionStatus";
 import { NO_AUTH_PROVIDER_IDS, LIVE_CATALOG_PROVIDERS, liveModelCaps } from "@/shared/utils/selectableModels";
+import { compileModelPattern, matchesModelPattern } from "@/shared/utils/keyAccess";
+
+const CHIP_CLASS = "px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1";
+const ADDED_CHIP_CLASS = "bg-primary border-primary text-white hover:bg-primary-hover";
+const AVAILABLE_CHIP_CLASS = "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5";
+const SELECT_ALL_CLASS = "px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const DESELECT_ALL_CLASS = "px-2 py-0.5 rounded text-[11px] font-medium bg-border/40 text-text-muted hover:text-text-main hover:bg-border/60 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+const REGEX_BADGE_CLASS = "text-[10px] px-1 py-0.2 rounded bg-primary/10 text-primary font-mono font-medium";
+const NO_PATTERNS = [];
+
+const isSelectableModel = (model) => !model.isPlaceholder && !model.patternOnly;
+const toComboSelection = ({ name }) => ({ id: name, name, value: name });
+
+function RegexIcon({ className }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className={className} fill="none">
+      <circle cx="3" cy="11.5" r="1.25" fill="currentColor" />
+      <path d="M10.5 3v8M7 5l7 4M7 9l7-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+RegexIcon.propTypes = { className: PropTypes.string };
+
+function matchesPickerModelPattern(regex, providerId, model) {
+  return !model.isPlaceholder && model.value.includes("/")
+    && matchesModelPattern(regex, providerId, model.id);
+}
 
 // Provider order: OAuth first, then Free Tier, then API Key (matches dashboard/providers)
 const PROVIDER_ORDER = [
@@ -86,7 +114,13 @@ export default function ModelSelectModal({
   capFilter = null,
   addedModelValues = [],
   closeOnSelect = true,
+  showSectionSelectAll = false,
   allowProviderWildcard = false,
+  modelPatterns = NO_PATTERNS,
+  onAddModelPattern,
+  onRemoveModelPattern,
+  selectionSaving = false,
+  selectionError,
 }) {
   // Live-fetched connections on modal open, fallback to activeProviders prop
   const [fetchedConnections, setFetchedConnections] = useState(null);
@@ -129,6 +163,7 @@ export default function ModelSelectModal({
 
   const { getCaps } = useModelCaps();
   const [searchQuery, setSearchQuery] = useState("");
+  const [rememberedPatterns, setRememberedPatterns] = useState(NO_PATTERNS);
   const [combos, setCombos] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [customModels, setCustomModels] = useState([]);
@@ -225,6 +260,11 @@ export default function ModelSelectModal({
   }, [isOpen]);
 
   const allProviders = useMemo(() => ({ ...OAUTH_PROVIDERS, ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...APIKEY_PROVIDERS }), []);
+  const patternSource = onAddModelPattern
+    ? searchQuery.trim().match(/^\/(.*)\/i?$/)?.[1].trim()
+    : undefined;
+  const previewPattern = useMemo(() => compileModelPattern(patternSource), [patternSource]);
+  const includePatternModels = Boolean(previewPattern);
 
   // Group models by provider with priority order
   const groupedModels = useMemo(() => {
@@ -247,12 +287,18 @@ export default function ModelSelectModal({
     // For these kinds, providers without hardcoded models can still be picked (provider-as-model fallback)
     const ALLOW_PROVIDER_FALLBACK_KINDS = new Set(["tts", "image", "webFetch"]);
 
+    const withPatternCandidates = (models, canSelect) => models.flatMap((model) => {
+      if (canSelect(model)) return [model];
+      return includePatternModels ? [{ ...model, patternOnly: true }] : [];
+    });
+    const isLlm = (model) => !getModelKind(model) || getModelKind(model) === "llm";
+
     // Filter a models[] array by kindFilter (keep only matching kind)
     const filterByKind = (models) => {
       // No kindFilter means the LLM selector. Keep custom models visible because
       // user-added models may have typed capabilities (for example imageToText)
       // while still being valid chat/combo targets.
-      if (!kindFilter) return models.filter((m) => m.isPlaceholder || m.isCustom || !getModelKind(m) || getModelKind(m) === "llm");
+      if (!kindFilter) return withPatternCandidates(models, (m) => m.isPlaceholder || m.isCustom || isLlm(m));
       if (!TYPED_KINDS.has(kindFilter)) return models;
       return models.filter((m) => m.isPlaceholder || getModelKind(m) === kindFilter);
     };
@@ -347,14 +393,15 @@ export default function ModelSelectModal({
             if (supports) combined = [{ id: providerId, name: providerInfo.name, value: alias }];
           }
         } else {
-          // LLM/null kind: merge hardcoded models (e.g. mimo-free → mimo-auto) with user-added models
-          const registeredLlms = customRegisteredModels.filter((m) => !getModelKind(m) || getModelKind(m) === "llm");
-          const seen = new Set([...aliasModels, ...registeredLlms].map((m) => m.value));
-          const hardcoded = getModelsByProviderId(providerId)
-            .filter((m) => !getModelKind(m) || getModelKind(m) === "llm")
-            .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) }))
+          // Exact selection keeps the LLM catalog; rule previews include typed models.
+          const aliasValues = new Set(aliasModels.map((m) => m.value));
+          const registered = withPatternCandidates(customRegisteredModels, isLlm)
+            .filter((m) => !m.patternOnly || !aliasValues.has(m.value));
+          const seen = new Set([...aliasModels, ...registered].map((m) => m.value));
+          const hardcoded = withPatternCandidates(getModelsByProviderId(providerId), isLlm)
+            .map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m), patternOnly: m.patternOnly }))
             .filter((m) => !seen.has(m.value));
-          combined = [...registeredLlms, ...aliasModels.filter((m) => !registeredLlms.some((registered) => registered.value === m.value)), ...hardcoded];
+          combined = [...registered, ...aliasModels.filter((m) => !registered.some((entry) => entry.value === m.value)), ...hardcoded];
         }
 
         if (combined.length > 0) {
@@ -513,9 +560,10 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, claudeModels, commandcodeModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, includePatternModels, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, claudeModels, commandcodeModels]);
 
-  // Parse search query into structured query (regex, positive tokens, negative tokens)
+  const activePatterns = useMemo(() => modelPatterns.map(compileModelPattern).filter(Boolean), [modelPatterns]);
+  const displayedPatterns = [...new Set([...rememberedPatterns, ...modelPatterns])];
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);
 
   // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only by design)
@@ -524,13 +572,6 @@ export default function ModelSelectModal({
     if (parsedQuery.isEmpty) return combos;
     return combos.filter(c => matchesSearch(c.name, parsedQuery));
   }, [combos, parsedQuery, kindFilter, capFilter]);
-
-  // Sort models alphabetically, with added models floated to top
-  const sortModels = (models) => {
-    const added = models.filter(m => addedModelValues.includes(m.value)).sort((a, b) => a.name.localeCompare(b.name));
-    const rest = models.filter(m => !addedModelValues.includes(m.value)).sort((a, b) => a.name.localeCompare(b.name));
-    return [...added, ...rest];
-  };
 
   // Filter models by search query (supports substring, regex, and negation !token / -token)
   const filteredGroups = useMemo(() => {
@@ -551,6 +592,8 @@ export default function ModelSelectModal({
         );
 
         models = models.filter((m) => {
+          if (matchesPickerModelPattern(previewPattern, providerId, m)) return true;
+          if (m.patternOnly) return false;
           if (matchesSearch(m, parsedQuery)) return true;
           // If provider or alias matches, but model doesn't violate negative exclusion terms
           if (providerNameMatches || aliasMatches) {
@@ -566,25 +609,31 @@ export default function ModelSelectModal({
       }
       filtered[providerId] = {
         ...group,
-        models: sortModels(models),
+        models: [...models].sort((a, b) =>
+          Number(addedModelValues.includes(b.value)) - Number(addedModelValues.includes(a.value))
+          || a.name.localeCompare(b.name)),
       };
     });
 
     return filtered;
-  }, [groupedModels, parsedQuery, addedModelValues, allowProviderWildcard]);
+  }, [groupedModels, parsedQuery, addedModelValues, allowProviderWildcard, capFilter, getCaps, previewPattern]);
 
-  // Visible models available for batch actions (excluding placeholders)
-  const visibleModels = useMemo(() => {
-    const list = [];
-    Object.values(filteredGroups).forEach((group) => {
-      group.models.forEach((m) => {
-        if (!m.isPlaceholder) {
-          list.push(m);
-        }
-      });
-    });
-    return list;
-  }, [filteredGroups]);
+  const visibleModels = useMemo(
+    () => Object.values(filteredGroups).flatMap((group) => group.models.filter(isSelectableModel)),
+    [filteredGroups]
+  );
+  const hasPatternMatches = previewPattern && Object.entries(filteredGroups).some(([providerId, group]) =>
+    group.models.some((model) => matchesPickerModelPattern(previewPattern, providerId, model)));
+
+  const togglePattern = (source) => {
+    if (modelPatterns.includes(source)) {
+      // Keep the chip in place when the saved list drops this rule.
+      setRememberedPatterns(displayedPatterns);
+      onRemoveModelPattern(source);
+    } else {
+      onAddModelPattern(source);
+    }
+  };
 
   const visibleUnadded = useMemo(() => {
     return visibleModels.filter((m) => !addedModelValues.includes(m.value));
@@ -612,6 +661,35 @@ export default function ModelSelectModal({
     }
   };
 
+  const renderSectionSelection = (entries, sectionLabel) => {
+    if (!showSectionSelectAll || closeOnSelect || !onSelectBatch || !onDeselectBatch) return null;
+    const selectable = entries.filter(isSelectableModel);
+    if (selectable.length === 0) return null;
+    const unadded = selectable.filter((entry) => !addedModelValues.includes(entry.value));
+    const allSelected = unadded.length === 0;
+    const action = allSelected ? "Deselect All" : "Select All";
+    const batch = allSelected ? selectable : unadded;
+    const onClick = allSelected ? onDeselectBatch : onSelectBatch;
+
+    return (
+      <button
+        type="button"
+        disabled={selectionSaving}
+        onClick={() => onClick(batch)}
+        className={`ml-auto shrink-0 ${allSelected ? DESELECT_ALL_CLASS : SELECT_ALL_CLASS}`}
+        aria-label={`${action} visible ${sectionLabel}`}
+      >
+        {action} ({batch.length})
+      </button>
+    );
+  };
+
+  const handleClose = () => {
+    setSearchQuery("");
+    setRememberedPatterns(NO_PATTERNS);
+    onClose();
+  };
+
   const handleSelect = (model) => {
     const value = model?.value || model?.name || model;
     const isAdded = addedModelValues.includes(value);
@@ -623,18 +701,14 @@ export default function ModelSelectModal({
     }
 
     if (closeOnSelect) {
-      onClose();
-      setSearchQuery("");
+      handleClose();
     }
   };
 
   return (
     <Modal
       isOpen={isOpen}
-      onClose={() => {
-        onClose();
-        setSearchQuery("");
-      }}
+      onClose={handleClose}
       title={title}
       size={size}
       className="p-4!"
@@ -643,53 +717,83 @@ export default function ModelSelectModal({
       {/* Info bar */}
       <div className="flex items-center gap-2 mb-3 px-2.5 py-2 bg-primary/8 border border-primary/20 rounded-lg text-xs text-text-muted">
         <span className="material-symbols-outlined text-primary shrink-0" style={{ fontSize: "14px" }}>info</span>
-        <span>
-          {allowProviderWildcard
-            ? "Click to add/remove a model, or click a provider name for wildcard (e.g. provider/*). Search supports exclusions (e.g. claude -haiku) and RegEx (/pattern/)."
-            : "Click to add, click again to remove. Search supports exclusions (e.g. claude -haiku) and RegEx (/pattern/)."}
-        </span>
+        <div>
+          <p>
+            {allowProviderWildcard
+              ? "Click to add/remove a model, or click a provider name for wildcard (e.g. provider/*). Search supports exclusions (e.g. claude -haiku) and RegEx (/pattern/)."
+              : "Click to add, click again to remove. Search supports exclusions (e.g. claude -haiku) and RegEx (/pattern/)."}
+          </p>
+          {onAddModelPattern && (
+            <p className="mt-1">
+              Search with <code>/pattern/</code> to match full model IDs by provider ID or display alias. Click <strong>Add regex</strong> to apply the rule. Click a rule to remove or restore it while the picker is open.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Search & batch actions */}
       <div className="mb-3 space-y-2">
-        <div className="relative">
-          <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted text-[16px]">
-            search
-          </span>
-          <input
-            type="text"
-            placeholder={
-              allowProviderWildcard
-                ? "Search models (e.g. claude -haiku, oc/*, /regex/)..."
-                : "Search models (e.g. claude -haiku, !embed, /regex/)..."
-            }
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-20 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
-          />
-          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-            {parsedQuery.isRegex && (
-              <span className="text-[10px] px-1 py-0.2 rounded bg-primary/10 text-primary font-mono font-medium">
-                regex
-              </span>
-            )}
-            {parsedQuery.negativeTerms.length > 0 && !parsedQuery.isRegex && (
-              <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-500 font-mono font-medium">
-                !exclude
-              </span>
-            )}
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                className="text-text-muted hover:text-text-main cursor-pointer p-0.5 rounded"
-                title="Clear search"
-              >
-                <span className="material-symbols-outlined text-[14px] leading-none">close</span>
-              </button>
-            )}
+        <div className="flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted text-[16px]">
+              search
+            </span>
+            <input
+              type="text"
+              aria-label={onAddModelPattern ? "Search models" : undefined}
+              placeholder={
+                allowProviderWildcard
+                  ? "Search models (e.g. claude -haiku, oc/*, /regex/)..."
+                  : "Search models (e.g. claude -haiku, !embed, /regex/)..."
+              }
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-24 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+            />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {onAddModelPattern && (parsedQuery.isRegex || previewPattern) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (previewPattern && !selectionSaving && !modelPatterns.includes(patternSource)) {
+                      onAddModelPattern(patternSource);
+                    }
+                  }}
+                  className={`${REGEX_BADGE_CLASS} cursor-pointer hover:bg-primary/20`}
+                >
+                  Add regex
+                </button>
+              )}
+              {!onAddModelPattern && parsedQuery.isRegex && (
+                <span className={REGEX_BADGE_CLASS}>regex</span>
+              )}
+              {parsedQuery.negativeTerms.length > 0 && !parsedQuery.isRegex && !previewPattern && (
+                <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-500 font-mono font-medium">
+                  !exclude
+                </span>
+              )}
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="text-text-muted hover:text-text-main cursor-pointer p-0.5 rounded"
+                  title="Clear search"
+                >
+                  <span className="material-symbols-outlined text-[14px] leading-none">close</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
+        {onAddModelPattern && (parsedQuery.isRegex || patternSource !== undefined) && !previewPattern && (
+          <p className="text-xs text-text-muted">To save a rule, enter a valid RE2 pattern as <code>/pattern/</code>.</p>
+        )}
+        {previewPattern && !hasPatternMatches && (
+          <p className="text-xs text-text-muted">
+            This rule matches no models in the picker. Try the full model ID with its provider ID or display alias.
+          </p>
+        )}
+        {selectionError && <p role="alert" className="text-xs text-red-500">{selectionError}</p>}
 
         {!closeOnSelect && visibleModels.length > 0 && (
           <div className="flex items-center justify-between px-1 text-[11px] text-text-muted">
@@ -703,8 +807,9 @@ export default function ModelSelectModal({
               {visibleUnadded.length > 0 && (
                 <button
                   type="button"
+                  disabled={selectionSaving}
                   onClick={handleSelectAllVisible}
-                  className="px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                  className={SELECT_ALL_CLASS}
                   title="Select all filtered models"
                 >
                   Select All ({visibleUnadded.length})
@@ -713,8 +818,9 @@ export default function ModelSelectModal({
               {visibleAdded.length > 0 && (
                 <button
                   type="button"
+                  disabled={selectionSaving}
                   onClick={handleDeselectAllVisible}
-                  className="px-2 py-0.5 rounded text-[11px] font-medium bg-border/40 text-text-muted hover:text-text-main hover:bg-border/60 transition-colors cursor-pointer"
+                  className={DESELECT_ALL_CLASS}
                   title="Deselect all filtered models"
                 >
                   Deselect All ({visibleAdded.length})
@@ -725,15 +831,45 @@ export default function ModelSelectModal({
         )}
       </div>
 
-      {/* Models grouped by provider - compact */}
       <div className="max-h-[400px] overflow-y-auto space-y-3">
-        {/* Combos section - always first */}
+        {onAddModelPattern && onRemoveModelPattern && displayedPatterns.length > 0 && (
+          <section aria-label="Regex rules">
+            <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
+              <RegexIcon className="size-3.5 shrink-0 text-primary" />
+              <h3 className="text-xs font-medium text-primary">Regex</h3>
+              <span className="text-[10px] text-text-muted">({modelPatterns.length})</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {displayedPatterns.map((source) => {
+                const isActive = modelPatterns.includes(source);
+                return (
+                  <button
+                    key={source}
+                    type="button"
+                    disabled={selectionSaving}
+                    onClick={() => togglePattern(source)}
+                    aria-label={`Regex ${source}`}
+                    aria-pressed={isActive}
+                    title={isActive ? "Remove regex" : "Restore regex"}
+                    className={`${CHIP_CLASS} ${isActive ? ADDED_CHIP_CLASS : AVAILABLE_CHIP_CLASS} max-w-full disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {isActive && <span aria-hidden="true" className="material-symbols-outlined shrink-0 leading-none" style={{ fontSize: "10px" }}>check</span>}
+                    <span className="min-w-0 break-all text-left">{source}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* Combos section */}
         {filteredCombos.length > 0 && (
           <div>
             <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
               <span className="material-symbols-outlined text-primary text-[14px]">layers</span>
               <span className="text-xs font-medium text-primary">Combos</span>
               <span className="text-[10px] text-text-muted">({filteredCombos.length})</span>
+              {renderSectionSelection(filteredCombos.map(toComboSelection), "combos")}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {filteredCombos.map((combo) => {
@@ -741,14 +877,16 @@ export default function ModelSelectModal({
                 return (
                   <button
                     key={combo.id}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
+                    type="button"
+                    disabled={selectionSaving}
+                    onClick={() => handleSelect(toComboSelection(combo))}
                     className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer flex items-center gap-1
+                      ${CHIP_CLASS} disabled:cursor-not-allowed disabled:opacity-50
                       ${isSelected
                         ? "bg-primary text-white border-primary"
                         : addedModelValues.includes(combo.name)
-                          ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                          : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
+                          ? ADDED_CHIP_CLASS
+                          : AVAILABLE_CHIP_CLASS
                       }
                     `}
                   >
@@ -782,9 +920,10 @@ export default function ModelSelectModal({
                 {allowProviderWildcard ? (
                   <button
                     type="button"
+                    disabled={selectionSaving}
                     onClick={() => handleSelect({ value: wildcardValue, name: wildcardValue })}
                     title={isWildcardAdded ? `Click to remove wildcard ${wildcardValue}` : `Click to allow all models from ${group.name} (${wildcardValue})`}
-                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium transition-all cursor-pointer border ${
+                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium transition-all cursor-pointer border disabled:cursor-not-allowed disabled:opacity-50 ${
                       isWildcardAdded
                         ? "bg-primary text-white border-primary shadow-2xs hover:bg-primary-hover"
                         : "text-primary border-transparent hover:bg-primary/10 hover:border-primary/20"
@@ -806,26 +945,39 @@ export default function ModelSelectModal({
                 <span className="text-[10px] text-text-muted">
                   ({group.models.length})
                 </span>
+                {renderSectionSelection(group.models, `${group.name} models`)}
               </div>
 
             <div className="flex flex-wrap gap-1.5">
               {group.models.map((model) => {
+                if (model.patternOnly) {
+                  return (
+                    <code key={model.value} className="max-w-full break-all rounded-xl border border-border bg-surface px-2 py-1 text-xs">
+                      {providerId}/{model.id}
+                    </code>
+                  );
+                }
                 const isSelected = selectedModel === model.value;
                 const isPlaceholder = model.isPlaceholder;
+                const isRegexMatch = activePatterns.some((regex) => matchesPickerModelPattern(regex, providerId, model));
                 return (
                   <button
                     key={model.value}
+                    type="button"
+                    disabled={selectionSaving}
                     onClick={() => handleSelect(model)}
-                    title={isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
+                    title={isRegexMatch ? "Regex match" : isPlaceholder ? "Select to pre-fill, then edit model ID in the input" : undefined}
                     className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
+                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer disabled:cursor-not-allowed disabled:opacity-50
                       ${isPlaceholder
                         ? "border-dashed border-border text-text-muted hover:border-primary/50 hover:text-primary bg-surface italic"
                         : isSelected
                           ? "bg-primary text-white border-primary"
                           : addedModelValues.includes(model.value)
                             ? "bg-primary border-primary text-white hover:bg-primary-hover"
-                            : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
+                            : isRegexMatch
+                              ? "bg-primary/10 border-primary text-primary hover:bg-primary/20"
+                              : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
                       }
                     `}
                   >
@@ -849,6 +1001,9 @@ export default function ModelSelectModal({
                           {model.name}
                           <CapacityBadges caps={getCaps(model.value)} />
                         </>
+                      )}
+                      {isRegexMatch && (
+                        <RegexIcon className="size-3.5 shrink-0" />
                       )}
                     </span>
                   </button>
@@ -891,5 +1046,11 @@ ModelSelectModal.propTypes = {
   kindFilter: PropTypes.string,
   addedModelValues: PropTypes.arrayOf(PropTypes.string),
   closeOnSelect: PropTypes.bool,
+  showSectionSelectAll: PropTypes.bool,
   allowProviderWildcard: PropTypes.bool,
+  modelPatterns: PropTypes.arrayOf(PropTypes.string),
+  onAddModelPattern: PropTypes.func,
+  onRemoveModelPattern: PropTypes.func,
+  selectionSaving: PropTypes.bool,
+  selectionError: PropTypes.string,
 };

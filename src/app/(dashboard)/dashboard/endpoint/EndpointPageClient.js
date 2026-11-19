@@ -686,11 +686,12 @@ export default function APIPageClient({ machineId }) {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.key) {
         setKeys(prev => prev.map(k => k.id === id ? { ...k, access: data.key.access } : k));
-      } else {
-        console.log("Error updating key access:", data.error || res.status);
+        return null;
       }
+      return data.error || "Could not save API key access.";
     } catch (error) {
       console.log("Error updating key access:", error);
+      return "Could not save API key access.";
     }
   };
 
