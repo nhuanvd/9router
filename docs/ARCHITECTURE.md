@@ -424,9 +424,9 @@ flowchart LR
 - `src/app/api/keys*`: local API key lifecycle
   - In the Endpoint dashboard, enable **Restrict access** and open **Add combo or model** to add a model regex.
     Enter a delimited RE2 pattern such as `/gemini/text-embedding-.*/` in the search field.
-    **Add regex** appears when a connected or keyless provider has a matching model, including supported non-chat models.
-    The saved pattern matches the full resolved `providerId/model` case-insensitively, including when clients use aliases.
-    Click **Add regex** to apply the rule immediately. Click a saved rule in the **Regex** section to remove it.
+    Click **Add regex** inside the search field once the pattern is valid. The picker shows when no available model matches the rule.
+    The saved pattern matches the full resolved `providerId/model` case-insensitively, including when clients use aliases. For example, use `/opencode-go/.*/` for the OpenCode Go provider.
+    The rule applies immediately. Click a saved rule in the **Regex** section to remove it.
     Removed rules stay visible until you close the picker. Click one again to restore it immediately.
     The API key list shows the saved rules. The same search field finds exact entries by name or regex.
     Use **Select All** beside the Combos or provider heading to add its visible entries.
