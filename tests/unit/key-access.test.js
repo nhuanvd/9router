@@ -9,7 +9,12 @@ const fx = vi.hoisted(() => ({
     { id: "c2", name: "other", models: ["openai/model-c"] },
   ],
   nodes: [{ id: "openai-compatible-chat-n1", type: "openai-compatible", prefix: "mock" }],
-  aliases: { fast: "openai/model-a", bee: "openai/model-b" },
+  aliases: {
+    fast: "openai/model-a",
+    bee: "openai/model-b",
+    "go-sample": "opencode-go/omen-alpha",
+    "ocg-redirect": "openai/model-a",
+  },
   keys: {},
 }));
 
@@ -50,6 +55,7 @@ beforeEach(() => {
   key("cx", { restricted: true, allow: ["cx/gpt-5"] });
   key("node", { restricted: true, allow: ["mock/glm-4"] });
   key("tavily", { restricted: true, allow: ["tavily", "Main"] });
+  key("regex", { restricted: true, allow: ["mock/glm-4"], modelPatterns: ["openai/model-[aA]", "codex/gpt-5.*"] });
 });
 
 describe("unrestricted passthrough", () => {
@@ -93,6 +99,61 @@ describe("restricted: allow by combo", () => {
   });
   it("other combos are denied", async () => {
     expect(await status("sk-combo", "other")).toBe(403);
+  });
+});
+
+describe("restricted: allow by model regex", () => {
+  it.each(["ocg/.*", "opencode-go/.*"])("matches %s against the same provider across all entry points", async (pattern) => {
+    key("go-pattern", { restricted: true, allow: [], modelPatterns: [pattern] });
+    for (const model of ["ocg/omen-alpha", "opencode-go/omen-alpha", "go-sample"]) {
+      expect(await status("sk-go-pattern", model)).toBe(200);
+    }
+    expect(await status("sk-go-pattern", "openai/omen-alpha")).toBe(403);
+
+    const ctx = await ctxFor("sk-go-pattern");
+    expect(await engine.enforceKeyAccessResolved(ctx, "ocg/omen-alpha", "opencode-go", "omen-alpha")).toBeNull();
+    const aliasEntry = { id: "ocg/omen-alpha", owned_by: "ocg" };
+    const canonicalEntry = { id: "opencode-go/omen-alpha", owned_by: "opencode-go" };
+    const otherProvider = { id: "openai/omen-alpha", owned_by: "openai" };
+    expect(await engine.filterModelsListForKey(ctx, [aliasEntry, canonicalEntry, otherProvider]))
+      .toEqual([aliasEntry, canonicalEntry]);
+  });
+
+  it("matches the saved ocg prefix pattern using the resolved target's display alias", async () => {
+    key("go-prefix", { restricted: true, allow: [], modelPatterns: ["ocg.*"] });
+    expect(await status("sk-go-prefix", "go-sample")).toBe(200);
+    expect(await status("sk-go-prefix", "ocg-redirect")).toBe(403);
+  });
+
+  it("skips display aliases that route to another provider", () => {
+    const pattern = helpers.compileModelPattern("mmf/.*");
+    expect(helpers.matchesModelPattern(pattern, "mmf", "mimo-auto")).toBe(true);
+    expect(helpers.matchesModelPattern(pattern, "mimo-free", "mimo-auto")).toBe(false);
+  });
+
+  it("fully matches resolved model IDs and accepts exact entries alongside patterns", async () => {
+    for (const model of ["fast", "OpenAI/Model-A", "cx/gpt-5-mini", "mock/glm-4"]) {
+      expect(await status("sk-regex", model)).toBe(200);
+    }
+    for (const model of ["bee", "openai/model-a-plus", "openai/gpt-5", "Main"]) {
+      expect(await status("sk-regex", model)).toBe(403);
+    }
+  });
+
+  it("uses the same model matching for resolved routes and capacity adapters", async () => {
+    const ctx = await ctxFor("sk-regex");
+    expect(await engine.enforceKeyAccessResolved(ctx, "fast", "openai", "model-a")).toBeNull();
+    expect((await engine.enforceKeyAccessResolved(ctx, "fast", "openai", "model-b")).status).toBe(403);
+    expect(await engine.filterAdapterModels(ctx, ["oc/vision", "cx/gpt-5", "openai/model-b"], ["oc/vision"]))
+      .toEqual(["oc/vision", "cx/gpt-5"]);
+  });
+
+  it("ignores invalid stored patterns and keeps combos and search providers explicit", async () => {
+    key("invalid", { restricted: true, allow: [], modelPatterns: ["["] });
+    expect(await status("sk-invalid", "openai/model-a")).toBe(403);
+    key("all-models", { restricted: true, allow: [], modelPatterns: [".*"] });
+    expect(await status("sk-all-models", "Main")).toBe(403);
+    expect((await engine.enforceKeyAccessProvider(await ctxFor("sk-all-models"), "tavily", null)).status).toBe(403);
   });
 });
 
@@ -191,6 +252,7 @@ describe("/v1/models filtering", () => {
     expect(await ids("sk-node")).toEqual(["mock/glm-4"]);
     expect(await ids("sk-tavily")).toEqual(["Main", "tavily/search"]);
     expect(await ids("sk-empty")).toEqual([]);
+    expect(await ids("sk-regex")).toEqual(["openai/model-a", "cx/gpt-5", "mock/glm-4"]);
   });
   it("leaves the list untouched for an unrestricted key", async () => {
     expect(await engine.filterModelsListForKey(await ctxFor("sk-open"), list)).toBe(list);
@@ -232,5 +294,23 @@ describe("helpers: storage + validation", () => {
     expect(v({ restricted: true, allow: [], mode: "deny" }).ok).toBe(false); // no deny mode
     expect(v({ restricted: true, allow: Array.from({ length: KEY_ACCESS_MAX_ENTRIES + 1 }, (_, i) => `m${i}`) }).ok).toBe(false);
     expect(v({ restricted: true, allow: ["x".repeat(300)] }).ok).toBe(false);
+  });
+  it("validates and persists regexes without reinterpreting existing literal entries", () => {
+    const checked = helpers.validateKeyAccessInput({
+      restricted: true,
+      allow: ["openai/model-*"],
+      modelPatterns: [" codex/gpt-5.* ", "codex/gpt-5.*"],
+    });
+    const expected = { restricted: true, allow: ["openai/model-*"], modelPatterns: ["codex/gpt-5.*"] };
+    expect(checked).toEqual({ ok: true, value: expected });
+    const cols = helpers.keyAccessToColumns(checked.value);
+    expect(helpers.keyAccessFromColumns(cols.accessRestricted, cols.accessAllow)).toEqual(expected);
+    expect(helpers.keyAccessFromColumns(1, '["openai/model-*"]')).toEqual({ restricted: true, allow: ["openai/model-*"] });
+
+    for (const modelPatterns of [null, [1], [""], ["["], ["(a)\\1"], ["x".repeat(257)]]) {
+      expect(helpers.validateKeyAccessInput({ restricted: true, modelPatterns }).ok).toBe(false);
+    }
+    const allow = Array.from({ length: KEY_ACCESS_MAX_ENTRIES }, (_, i) => `m${i}`);
+    expect(helpers.validateKeyAccessInput({ restricted: true, allow, modelPatterns: [".*"] }).ok).toBe(false);
   });
 });

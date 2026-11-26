@@ -84,12 +84,13 @@ describe("apiKeys access columns: upgrade from the previous schema", () => {
   it("export/import round-trips access; a backup without access restores unrestricted; malformed access is refused", async () => {
     writeLegacyDb(tempDir);
     const { db } = await boot();
-    await db.updateApiKey("k1", { access: { restricted: true, allow: ["Main"] } });
+    const access = { restricted: true, allow: ["Main"], modelPatterns: ["codex/gpt-5.*"] };
+    await db.updateApiKey("k1", { access });
     const dump = await db.exportDb();
-    expect(dump.apiKeys.find((k) => k.id === "k1").access).toEqual({ restricted: true, allow: ["Main"] });
+    expect(dump.apiKeys.find((k) => k.id === "k1").access).toEqual(access);
 
     await db.importDb(dump);
-    expect((await db.getApiKeyById("k1")).access).toEqual({ restricted: true, allow: ["Main"] });
+    expect((await db.getApiKeyById("k1")).access).toEqual(access);
 
     const legacy = { ...dump, apiKeys: dump.apiKeys.map(({ access, ...rest }) => rest) };
     await db.importDb(legacy);

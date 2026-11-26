@@ -1,16 +1,15 @@
 // Per-API-key access control for the /v1/* inference keys.
 //
 // Two modes per key: UNRESTRICTED (default — exactly today's behaviour) or
-// RESTRICTED, where the key may call ONLY the combos and models in its allow
-// list. No wildcards, no deny mode. Matching is exact and case-insensitive, on
-// RESOLVED identities, so every spelling that routes to the same target is
-// treated the same and no spelling can route somewhere the list does not name:
+// RESTRICTED, where the key may call the combos and models in its allow list.
+// Matching is case-insensitive on resolved identities:
 //
 //   * a request that routes as a combo (getComboModels — the lookup routing
 //     itself uses) is allowed iff that combo's name is listed;
 //   * a request that routes to a model is allowed iff its resolved
 //     `providerId/model` equals the resolved `providerId/model` of a listed
-//     model entry. So `cx/gpt-5`, `codex/gpt-5` and an alias that points there
+//     model entry or fully matches a model regex by provider ID or display alias.
+//     So `cx/gpt-5`, `codex/gpt-5` and an alias that points there
 //     are one target; a raw string that merely looks like a listed entry but
 //     routes elsewhere (e.g. `MAIN` when the combo is `Main`, which routes to
 //     `openai/MAIN`) is not;
@@ -26,6 +25,7 @@ import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 import { getCombos } from "@/lib/db/repos/combosRepo.js";
 import { getModelInfo, getComboModels } from "./model.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
+import { compileModelPattern, matchesModelPattern } from "@/shared/utils/keyAccess.js";
 import {
   KEY_ACCESS_COMBO_OWNER,
   KEY_ACCESS_PROVIDER_AS_MODEL_KINDS,
@@ -76,6 +76,7 @@ export async function getKeyAccessContext(request) {
     keyId: record.id,
     keyName: record.name || record.id,
     allow: record.access.allow || [],
+    modelPatterns: record.access.modelPatterns || [],
     _sets: null,
   };
 }
@@ -98,8 +99,14 @@ async function getAllowSets(ctx) {
     if (info?.provider && info.model) models.add(canonicalModel(info.provider, info.model));
     if (!entry.includes("/")) providers.add(lower(resolveProviderId(entry)));
   }
-  ctx._sets = { combos, models, providers };
+  const modelPatterns = ctx.modelPatterns.map(compileModelPattern).filter(Boolean);
+  ctx._sets = { combos, models, providers, modelPatterns };
   return ctx._sets;
+}
+
+function matchesModel(sets, provider, model) {
+  return sets.models.has(canonicalModel(provider, model))
+    || sets.modelPatterns.some((pattern) => matchesModelPattern(pattern, provider, model));
 }
 
 async function isModelStringAllowed(ctx, requested) {
@@ -107,7 +114,7 @@ async function isModelStringAllowed(ctx, requested) {
   const info = await getModelInfo(requested);
   // provider null ⇔ an existing combo with no members (routes nowhere).
   if (!info?.provider) return sets.combos.has(lower(requested));
-  return sets.models.has(canonicalModel(info.provider, info.model));
+  return !!info.model && matchesModel(sets, info.provider, info.model);
 }
 
 export function keyAccessDeniedResponse(ctx, requested) {
@@ -142,7 +149,7 @@ export async function enforceKeyAccessResolved(ctx, requested, provider, model) 
   const label = requested || (provider ? `${provider}/${model ?? ""}` : "");
   if (!provider || !model) return keyAccessDeniedResponse(ctx, label);
   const sets = await getAllowSets(ctx);
-  return sets.models.has(canonicalModel(provider, model)) ? null : keyAccessDeniedResponse(ctx, label);
+  return matchesModel(sets, provider, model) ? null : keyAccessDeniedResponse(ctx, label);
 }
 
 /**
@@ -193,7 +200,7 @@ export async function filterModelsListForKey(ctx, list) {
       if (sets.providers.has(lower(info.provider))) out.push(entry);
       continue;
     }
-    if (sets.models.has(canonicalModel(info.provider, info.model))) out.push(entry);
+    if (info.model && matchesModel(sets, info.provider, info.model)) out.push(entry);
   }
   return out;
 }
